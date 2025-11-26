@@ -1,0 +1,7 @@
+# Requirements for Web UI
+# Install with: pip install -r requirements_web_ui.txt
+
+streamlit>=1.28.0
+pandas>=1.5.0
+geopandas>=0.13.0
+
