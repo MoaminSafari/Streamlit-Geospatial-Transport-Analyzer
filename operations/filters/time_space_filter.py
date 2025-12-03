@@ -1,14 +1,21 @@
 """
-Time-Space Filter Operation - Complete UI extracted
+Time-Space Filter Operation - Complete with separated date and time controls
 """
 
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, date, time
 from typing import Dict, Any, Optional
+import pandas as pd
+import geopandas as gpd
+import logging
+from pathlib import Path
 from operations.base import BaseOperation
+from operations.config import BOUNDARY_SOURCES, OUTPUT_FORMATS
 from ui_helpers import utils
 from config import Config
 from analysis_engine import TimeFilter
+
+_logger = logging.getLogger("time_space_filter")
 
 
 def get_time_filter_from_sidebar():
@@ -27,28 +34,30 @@ def get_filtered_files(data_source, time_filter):
 
 
 class TimeSpaceFilterOperation(BaseOperation):
-    """Filter by time and location on raw data"""
+    """Filter by time and location on raw data - with separated date and time ranges"""
     
     def get_metadata(self) -> Dict[str, str]:
         return {
             'key': 'time_space_filter',
             'title': 'Time-Space Filter',
-            'description': 'Filter by time and location on raw data',
+            'description': 'Filter trips by date range, time range, and location',
             'category': 'filters'
         }
     
     def render_ui(self) -> Optional[Dict[str, Any]]:
-        """Render complex UI with time and spatial filters"""
+        """Render improved UI with separated date and time ranges"""
         
-        st.markdown("### Configuration")
+        st.markdown("### 📊 Time-Space Filter Configuration")
+        st.markdown("Filter trips by **date range**, **time range**, and **location**")
+        st.markdown("---")
         
         # Initialize session state
         for key in ['tsf_enable_org_time', 'tsf_enable_dst_time', 'tsf_enable_org_spatial', 'tsf_enable_dst_spatial']:
             if key not in st.session_state:
                 st.session_state[key] = False
         
-        # TIME FILTERS
-        with st.expander("🕐 Time Filters", expanded=True):
+        # TIME FILTERS - Improved with separated date and time
+        with st.expander("🕐 Time Filters (Date Range + Time Range)", expanded=True):
             col1, col2 = st.columns(2)
             
             # Origin Time
@@ -60,55 +69,67 @@ class TimeSpaceFilterOperation(BaseOperation):
                 org_time_params = {"enabled": enable_org_time}
                 
                 if enable_org_time:
-                    st.markdown("##### Origin Time Range")
+                    st.markdown("##### 📅 Origin - Date Range")
                     
-                    # Session state defaults
-                    if 'tsf_org_d1' not in st.session_state:
-                        st.session_state.tsf_org_d1 = datetime.now().date()
-                    if 'tsf_org_h1' not in st.session_state:
-                        st.session_state.tsf_org_h1 = 0
-                    if 'tsf_org_m1' not in st.session_state:
-                        st.session_state.tsf_org_m1 = 0
-                    if 'tsf_org_h2' not in st.session_state:
-                        st.session_state.tsf_org_h2 = 23
-                    if 'tsf_org_m2' not in st.session_state:
-                        st.session_state.tsf_org_m2 = 59
-                    if 'tsf_same_date_org' not in st.session_state:
-                        st.session_state.tsf_same_date_org = True
+                    # Initialize defaults
+                    if 'tsf_org_start_date' not in st.session_state:
+                        st.session_state.tsf_org_start_date = datetime.now().date()
+                    if 'tsf_org_end_date' not in st.session_state:
+                        st.session_state.tsf_org_end_date = datetime.now().date()
                     
-                    d1 = st.date_input("Start Date", st.session_state.tsf_org_d1, key="org_d1")
-                    st.session_state.tsf_org_d1 = d1
+                    start_date = st.date_input("Start Date", 
+                                              value=st.session_state.tsf_org_start_date,
+                                              key="org_start_date")
+                    end_date = st.date_input("End Date", 
+                                            value=st.session_state.tsf_org_end_date,
+                                            key="org_end_date")
                     
-                    col_h1, col_m1 = st.columns(2)
-                    with col_h1:
-                        h1 = st.slider("Hour", 0, 23, st.session_state.tsf_org_h1, key="org_h1")
-                        st.session_state.tsf_org_h1 = h1
-                    with col_m1:
-                        m1 = st.slider("Minute", 0, 59, st.session_state.tsf_org_m1, key="org_m1")
-                        st.session_state.tsf_org_m1 = m1
+                    st.session_state.tsf_org_start_date = start_date
+                    st.session_state.tsf_org_end_date = end_date
                     
-                    same_date_org = st.checkbox("End Date = Start Date", value=st.session_state.tsf_same_date_org, key="same_date_org")
-                    st.session_state.tsf_same_date_org = same_date_org
+                    # Time Range (separate from dates)
+                    st.markdown("##### ⏰ Origin - Time Range")
+                    st.caption("Example: 7:00 to 8:00 for morning rush hour")
                     
-                    if same_date_org:
-                        d2 = d1
-                        st.info(f"End Date: {d1}")
-                    else:
-                        if 'tsf_org_d2' not in st.session_state:
-                            st.session_state.tsf_org_d2 = d1
-                        d2 = st.date_input("End Date", st.session_state.tsf_org_d2, key="org_d2")
-                        st.session_state.tsf_org_d2 = d2
+                    if 'tsf_org_start_hour' not in st.session_state:
+                        st.session_state.tsf_org_start_hour = 7
+                    if 'tsf_org_start_min' not in st.session_state:
+                        st.session_state.tsf_org_start_min = 0
+                    if 'tsf_org_end_hour' not in st.session_state:
+                        st.session_state.tsf_org_end_hour = 8
+                    if 'tsf_org_end_min' not in st.session_state:
+                        st.session_state.tsf_org_end_min = 0
                     
-                    col_h2, col_m2 = st.columns(2)
-                    with col_h2:
-                        h2 = st.slider("Hour", 0, 23, st.session_state.tsf_org_h2, key="org_h2")
-                        st.session_state.tsf_org_h2 = h2
-                    with col_m2:
-                        m2 = st.slider("Minute", 0, 59, st.session_state.tsf_org_m2, key="org_m2")
-                        st.session_state.tsf_org_m2 = m2
+                    col_t1, col_t2 = st.columns(2)
+                    with col_t1:
+                        start_hour = st.number_input("Start Hour", 0, 23, 
+                                                    st.session_state.tsf_org_start_hour,
+                                                    key="org_start_hour")
+                        start_min = st.number_input("Start Min", 0, 59, 
+                                                   st.session_state.tsf_org_start_min,
+                                                   key="org_start_min")
+                    with col_t2:
+                        end_hour = st.number_input("End Hour", 0, 23, 
+                                                  st.session_state.tsf_org_end_hour,
+                                                  key="org_end_hour")
+                        end_min = st.number_input("End Min", 0, 59, 
+                                                 st.session_state.tsf_org_end_min,
+                                                 key="org_end_min")
                     
-                    org_time_params["start"] = f"{d1} {h1:02d}:{m1:02d}"
-                    org_time_params["end"] = f"{d2} {h2:02d}:{m2:02d}"
+                    st.session_state.tsf_org_start_hour = start_hour
+                    st.session_state.tsf_org_start_min = start_min
+                    st.session_state.tsf_org_end_hour = end_hour
+                    st.session_state.tsf_org_end_min = end_min
+                    
+                    # Display summary
+                    st.success(f"✓ Filter: {start_date} to {end_date} between {start_hour:02d}:{start_min:02d} - {end_hour:02d}:{end_min:02d}")
+                    
+                    org_time_params.update({
+                        "start_date": str(start_date),
+                        "end_date": str(end_date),
+                        "start_time": f"{start_hour:02d}:{start_min:02d}",
+                        "end_time": f"{end_hour:02d}:{end_min:02d}"
+                    })
 
             # Destination Time
             with col2:
@@ -119,54 +140,66 @@ class TimeSpaceFilterOperation(BaseOperation):
                 dst_time_params = {"enabled": enable_dst_time}
                 
                 if enable_dst_time:
-                    st.markdown("##### Destination Time Range")
+                    st.markdown("##### 📅 Destination - Date Range")
                     
-                    if 'tsf_dst_d1' not in st.session_state:
-                        st.session_state.tsf_dst_d1 = datetime.now().date()
-                    if 'tsf_dst_h1' not in st.session_state:
-                        st.session_state.tsf_dst_h1 = 0
-                    if 'tsf_dst_m1' not in st.session_state:
-                        st.session_state.tsf_dst_m1 = 0
-                    if 'tsf_dst_h2' not in st.session_state:
-                        st.session_state.tsf_dst_h2 = 23
-                    if 'tsf_dst_m2' not in st.session_state:
-                        st.session_state.tsf_dst_m2 = 59
-                    if 'tsf_same_date_dst' not in st.session_state:
-                        st.session_state.tsf_same_date_dst = True
+                    if 'tsf_dst_start_date' not in st.session_state:
+                        st.session_state.tsf_dst_start_date = datetime.now().date()
+                    if 'tsf_dst_end_date' not in st.session_state:
+                        st.session_state.tsf_dst_end_date = datetime.now().date()
                     
-                    d3 = st.date_input("Start Date", st.session_state.tsf_dst_d1, key="dst_d1")
-                    st.session_state.tsf_dst_d1 = d3
+                    dst_start_date = st.date_input("Start Date", 
+                                                  value=st.session_state.tsf_dst_start_date,
+                                                  key="dst_start_date")
+                    dst_end_date = st.date_input("End Date", 
+                                                value=st.session_state.tsf_dst_end_date,
+                                                key="dst_end_date")
                     
-                    col_h3, col_m3 = st.columns(2)
-                    with col_h3:
-                        h3 = st.slider("Hour", 0, 23, st.session_state.tsf_dst_h1, key="dst_h1")
-                        st.session_state.tsf_dst_h1 = h3
-                    with col_m3:
-                        m3 = st.slider("Minute", 0, 59, st.session_state.tsf_dst_m1, key="dst_m1")
-                        st.session_state.tsf_dst_m1 = m3
+                    st.session_state.tsf_dst_start_date = dst_start_date
+                    st.session_state.tsf_dst_end_date = dst_end_date
                     
-                    same_date_dst = st.checkbox("End Date = Start Date", value=st.session_state.tsf_same_date_dst, key="same_date_dst")
-                    st.session_state.tsf_same_date_dst = same_date_dst
+                    # Time Range (separate from dates)
+                    st.markdown("##### ⏰ Destination - Time Range")
+                    st.caption("Example: 17:00 to 19:00 for evening rush hour")
                     
-                    if same_date_dst:
-                        d4 = d3
-                        st.info(f"End Date: {d3}")
-                    else:
-                        if 'tsf_dst_d2' not in st.session_state:
-                            st.session_state.tsf_dst_d2 = d3
-                        d4 = st.date_input("End Date", st.session_state.tsf_dst_d2, key="dst_d2")
-                        st.session_state.tsf_dst_d2 = d4
+                    if 'tsf_dst_start_hour' not in st.session_state:
+                        st.session_state.tsf_dst_start_hour = 17
+                    if 'tsf_dst_start_min' not in st.session_state:
+                        st.session_state.tsf_dst_start_min = 0
+                    if 'tsf_dst_end_hour' not in st.session_state:
+                        st.session_state.tsf_dst_end_hour = 19
+                    if 'tsf_dst_end_min' not in st.session_state:
+                        st.session_state.tsf_dst_end_min = 0
                     
-                    col_h4, col_m4 = st.columns(2)
-                    with col_h4:
-                        h4 = st.slider("Hour", 0, 23, st.session_state.tsf_dst_h2, key="dst_h2")
-                        st.session_state.tsf_dst_h2 = h4
-                    with col_m4:
-                        m4 = st.slider("Minute", 0, 59, st.session_state.tsf_dst_m2, key="dst_m2")
-                        st.session_state.tsf_dst_m2 = m4
+                    col_t3, col_t4 = st.columns(2)
+                    with col_t3:
+                        dst_start_hour = st.number_input("Start Hour", 0, 23, 
+                                                        st.session_state.tsf_dst_start_hour,
+                                                        key="dst_start_hour")
+                        dst_start_min = st.number_input("Start Min", 0, 59, 
+                                                       st.session_state.tsf_dst_start_min,
+                                                       key="dst_start_min")
+                    with col_t4:
+                        dst_end_hour = st.number_input("End Hour", 0, 23, 
+                                                      st.session_state.tsf_dst_end_hour,
+                                                      key="dst_end_hour")
+                        dst_end_min = st.number_input("End Min", 0, 59, 
+                                                     st.session_state.tsf_dst_end_min,
+                                                     key="dst_end_min")
                     
-                    dst_time_params["start"] = f"{d3} {h3:02d}:{m3:02d}"
-                    dst_time_params["end"] = f"{d4} {h4:02d}:{m4:02d}"
+                    st.session_state.tsf_dst_start_hour = dst_start_hour
+                    st.session_state.tsf_dst_start_min = dst_start_min
+                    st.session_state.tsf_dst_end_hour = dst_end_hour
+                    st.session_state.tsf_dst_end_min = dst_end_min
+                    
+                    # Display summary
+                    st.success(f"✓ Filter: {dst_start_date} to {dst_end_date} between {dst_start_hour:02d}:{dst_start_min:02d} - {dst_end_hour:02d}:{dst_end_min:02d}")
+                    
+                    dst_time_params.update({
+                        "start_date": str(dst_start_date),
+                        "end_date": str(dst_end_date),
+                        "start_time": f"{dst_start_hour:02d}:{dst_start_min:02d}",
+                        "end_time": f"{dst_end_hour:02d}:{dst_end_min:02d}"
+                    })
 
         # SPATIAL FILTERS
         with st.expander("📍 Spatial Filters", expanded=True):
@@ -287,20 +320,213 @@ class TimeSpaceFilterOperation(BaseOperation):
     
     def execute(self, org_time_params, dst_time_params, org_spatial_params, 
                 dst_spatial_params, output_format, output_suffix) -> Dict[str, Any]:
-        """Execute time-space filter on multiple files"""
-        import pandas as pd
+        """Execute time-space filter on raw data files"""
         
-        time_filter = get_time_filter_from_sidebar()
-        files = get_filtered_files(st.session_state.data_source, time_filter)
+        try:
+            _logger.info("Starting time-space filter operation")
+            
+            # Get files to process
+            time_filter = get_time_filter_from_sidebar()
+            files = get_filtered_files(st.session_state.data_source, time_filter)
+            
+            if not files:
+                return {'success': False, 'error': 'No files match the time filter from sidebar'}
+            
+            _logger.info(f"Processing {len(files)} files")
+            
+            # Load and concatenate all files
+            all_data = []
+            for file_path in files:
+                try:
+                    # Determine if Snapp or Tapsi
+                    if 'Snapp' in str(file_path) or 'snapp' in str(file_path).lower():
+                        # Snapp: no header
+                        from config import DataColumnMetadata
+                        df = pd.read_csv(file_path, names=DataColumnMetadata.get_snapp_columns())
+                    else:
+                        # Tapsi: has header
+                        df = pd.read_csv(file_path)
+                        from config import DataColumnMetadata
+                        df = df.rename(columns=DataColumnMetadata.get_tapsi_mapping())
+                    
+                    all_data.append(df)
+                    _logger.info(f"Loaded {len(df)} rows from {Path(file_path).name}")
+                except Exception as e:
+                    _logger.warning(f"Error loading {file_path}: {e}")
+                    continue
+            
+            if not all_data:
+                return {'success': False, 'error': 'Could not load any data from files'}
+            
+            # Combine all data
+            combined_df = pd.concat(all_data, ignore_index=True)
+            initial_count = len(combined_df)
+            _logger.info(f"Combined {initial_count} total trips")
+            
+            # Parse datetime columns
+            combined_df['start_datetime'] = pd.to_datetime(combined_df['start_time'], errors='coerce')
+            combined_df['end_datetime'] = pd.to_datetime(combined_df['end_time'], errors='coerce')
+            
+            # Apply time filters
+            if org_time_params.get('enabled'):
+                combined_df = self._apply_time_filter(
+                    combined_df, 'start_datetime', org_time_params
+                )
+                _logger.info(f"After origin time filter: {len(combined_df)} trips")
+            
+            if dst_time_params.get('enabled'):
+                combined_df = self._apply_time_filter(
+                    combined_df, 'end_datetime', dst_time_params
+                )
+                _logger.info(f"After destination time filter: {len(combined_df)} trips")
+            
+            # Apply spatial filters
+            if org_spatial_params.get('enabled'):
+                combined_df = self._apply_spatial_filter(
+                    combined_df, 'org', org_spatial_params
+                )
+                _logger.info(f"After origin spatial filter: {len(combined_df)} trips")
+            
+            if dst_spatial_params.get('enabled'):
+                combined_df = self._apply_spatial_filter(
+                    combined_df, 'dst', dst_spatial_params
+                )
+                _logger.info(f"After destination spatial filter: {len(combined_df)} trips")
+            
+            final_count = len(combined_df)
+            
+            if final_count == 0:
+                return {'success': False, 'error': 'No trips match the filter criteria'}
+            
+            # Save output
+            config = Config()
+            if output_format == "csv":
+                output_path = config.aggregated_path / f"filtered_trips{output_suffix}.csv"
+                combined_df.to_csv(output_path, index=False)
+                _logger.info(f"Saved CSV to {output_path}")
+            else:
+                # For shapefile, we need to create geometry
+                gdf = gpd.GeoDataFrame(
+                    combined_df,
+                    geometry=gpd.points_from_xy(combined_df.org_lng, combined_df.org_lat),
+                    crs="EPSG:4326"
+                )
+                output_path = config.gis_output_path / f"filtered_trips{output_suffix}"
+                output_path.mkdir(exist_ok=True, parents=True)
+                shp_path = output_path / f"filtered_trips{output_suffix}.shp"
+                gdf.to_file(shp_path)
+                _logger.info(f"Saved shapefile to {shp_path}")
+                output_path = shp_path
+            
+            return {
+                'success': True,
+                'output_path': str(output_path),
+                'initial_count': initial_count,
+                'filtered_count': final_count,
+                'filter_rate': f"{(final_count/initial_count)*100:.1f}%"
+            }
+            
+        except Exception as e:
+            _logger.error(f"Error in time-space filter: {e}")
+            import traceback
+            _logger.error(traceback.format_exc())
+            return {'success': False, 'error': str(e)}
+    
+    def _apply_time_filter(self, df: pd.DataFrame, datetime_col: str, 
+                          params: Dict[str, Any]) -> pd.DataFrame:
+        """Apply time filter (date range + time range)"""
         
-        if not files:
-            return {'success': False, 'error': 'No files match the time filter from sidebar'}
+        # Parse parameters
+        start_date = pd.to_datetime(params['start_date'])
+        end_date = pd.to_datetime(params['end_date'])
+        start_time = params['start_time']  # "HH:MM"
+        end_time = params['end_time']      # "HH:MM"
         
-        # Simplified execution (full implementation coming soon)
-        st.info("⏳ Time-Space Filter operation is being migrated. Full implementation coming soon...")
-        st.warning("Please use the legacy UI for now or wait for the next update.")
+        # Parse time strings
+        start_h, start_m = map(int, start_time.split(':'))
+        end_h, end_m = map(int, end_time.split(':'))
         
-        return {
-            'success': False,
-            'error': 'Time-Space Filter migration in progress. Full implementation coming soon.'
-        }
+        # Filter by date range
+        df_filtered = df[
+            (df[datetime_col].dt.date >= start_date.date()) &
+            (df[datetime_col].dt.date <= end_date.date())
+        ].copy()
+        
+        # Filter by time range (hour and minute)
+        df_filtered['_hour'] = df_filtered[datetime_col].dt.hour
+        df_filtered['_minute'] = df_filtered[datetime_col].dt.minute
+        
+        # Create time as total minutes from midnight for comparison
+        df_filtered['_time_mins'] = df_filtered['_hour'] * 60 + df_filtered['_minute']
+        start_mins = start_h * 60 + start_m
+        end_mins = end_h * 60 + end_m
+        
+        df_filtered = df_filtered[
+            (df_filtered['_time_mins'] >= start_mins) &
+            (df_filtered['_time_mins'] <= end_mins)
+        ]
+        
+        # Clean up temporary columns
+        df_filtered = df_filtered.drop(columns=['_hour', '_minute', '_time_mins'])
+        
+        return df_filtered
+    
+    def _apply_spatial_filter(self, df: pd.DataFrame, endpoint: str,
+                             params: Dict[str, Any]) -> pd.DataFrame:
+        """Apply spatial filter (coordinates or shapefile zones)"""
+        
+        lat_col = f"{endpoint}_lat"
+        lng_col = f"{endpoint}_lng"
+        
+        mode = params.get('mode', 'coordinates')
+        
+        if mode == 'coordinates':
+            # Bounding box filter
+            lat_min = params['lat_min']
+            lat_max = params['lat_max']
+            lon_min = params['lon_min']
+            lon_max = params['lon_max']
+            
+            df_filtered = df[
+                (df[lat_col] >= lat_min) & (df[lat_col] <= lat_max) &
+                (df[lng_col] >= lon_min) & (df[lng_col] <= lon_max)
+            ]
+            
+        else:  # shapefile mode
+            # Load shapefile
+            config = Config()
+            boundary_source = params['boundary_source']
+            
+            if boundary_source == 'neighborhoods':
+                shp_path = config.neighborhoods_shapefile
+            elif boundary_source == 'districts':
+                shp_path = config.districts_shapefile
+            elif boundary_source == 'subregions':
+                shp_path = config.subregions_shapefile
+            elif boundary_source == 'traffic_zones':
+                shp_path = config.traffic_zones_shapefile
+            else:
+                raise ValueError(f"Unknown boundary source: {boundary_source}")
+            
+            boundaries = gpd.read_file(shp_path)
+            zone_field = params['zone_field']
+            selected_zones = params.get('selected_zones', [])
+            
+            if selected_zones:
+                # Filter to selected zones
+                boundaries = boundaries[boundaries[zone_field].isin(selected_zones)]
+            
+            # Create GeoDataFrame from trip data
+            gdf = gpd.GeoDataFrame(
+                df,
+                geometry=gpd.points_from_xy(df[lng_col], df[lat_col]),
+                crs="EPSG:4326"
+            )
+            
+            # Spatial join
+            gdf_filtered = gpd.sjoin(gdf, boundaries, how='inner', predicate='within')
+            
+            # Convert back to regular DataFrame
+            df_filtered = pd.DataFrame(gdf_filtered.drop(columns='geometry'))
+        
+        return df_filtered
