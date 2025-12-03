@@ -49,6 +49,7 @@ class TimeSpaceFilterOperation(BaseOperation):
         
         st.markdown("### 📊 Time-Space Filter Configuration")
         st.markdown("Filter trips by **date range**, **time range**, and **location**")
+        st.info("💡 **Example**: Filter all trips between 7-8 AM across an entire month")
         st.markdown("---")
         
         # Initialize session state
@@ -122,7 +123,7 @@ class TimeSpaceFilterOperation(BaseOperation):
                     st.session_state.tsf_org_end_min = end_min
                     
                     # Display summary
-                    st.success(f"✓ Filter: {start_date} to {end_date} between {start_hour:02d}:{start_min:02d} - {end_hour:02d}:{end_min:02d}")
+                    st.success(f"✓ Filter: {start_date} to {end_date} | Time: {start_hour:02d}:{start_min:02d} - {end_hour:02d}:{end_min:02d}")
                     
                     org_time_params.update({
                         "start_date": str(start_date),
@@ -192,7 +193,7 @@ class TimeSpaceFilterOperation(BaseOperation):
                     st.session_state.tsf_dst_end_min = dst_end_min
                     
                     # Display summary
-                    st.success(f"✓ Filter: {dst_start_date} to {dst_end_date} between {dst_start_hour:02d}:{dst_start_min:02d} - {dst_end_hour:02d}:{dst_end_min:02d}")
+                    st.success(f"✓ Filter: {dst_start_date} to {dst_end_date} | Time: {dst_start_hour:02d}:{dst_start_min:02d} - {dst_end_hour:02d}:{dst_end_min:02d}")
                     
                     dst_time_params.update({
                         "start_date": str(dst_start_date),
@@ -290,7 +291,7 @@ class TimeSpaceFilterOperation(BaseOperation):
                             st.error("Could not load zones")
 
         # Output Settings
-        st.subheader("Output Settings")
+        st.subheader("⚙️ Output Settings")
         col_out1, col_out2 = st.columns(2)
         with col_out1:
             output_format = st.selectbox("Output Format", ["csv", "shapefile"], key="ts_fmt")
@@ -300,11 +301,23 @@ class TimeSpaceFilterOperation(BaseOperation):
             default_suffix = f"_{time_suffix}_timespace_filtered"
             output_suffix = st.text_input("Output Suffix", default_suffix, key="ts_suf")
             
-        st.info("💡 Tip: Your filter settings are automatically saved and will restore when you refresh the page!")
+        # Memory optimization option
+        col_mem1, col_mem2 = st.columns(2)
+        with col_mem1:
+            batch_processing = st.checkbox(
+                "🧠 Batch Processing (for large datasets)", 
+                value=False,
+                help="Process files one by one to reduce memory usage. Slower but safer for very large datasets."
+            )
+        with col_mem2:
+            if batch_processing:
+                st.info("✓ Will process files individually")
             
-        if st.button("▶️ Run Filter Operation", type="primary", width='stretch'):
+        st.info("💡 Tip: Your filter settings are automatically saved!")
+            
+        if st.button("▶️ Run Filter Operation", type="primary", use_container_width=True):
             if not any([enable_org_time, enable_dst_time, enable_org_spatial, enable_dst_spatial]):
-                st.error("Please enable at least one filter.")
+                st.error("❌ Please enable at least one filter")
                 return None
             
             return {
@@ -313,124 +326,446 @@ class TimeSpaceFilterOperation(BaseOperation):
                 'org_spatial_params': org_spatial_params,
                 'dst_spatial_params': dst_spatial_params,
                 'output_format': output_format,
-                'output_suffix': output_suffix
+                'output_suffix': output_suffix,
+                'batch_processing': batch_processing
             }
         
         return None
     
     def execute(self, org_time_params, dst_time_params, org_spatial_params, 
-                dst_spatial_params, output_format, output_suffix) -> Dict[str, Any]:
+                dst_spatial_params, output_format, output_suffix, batch_processing=False) -> Dict[str, Any]:
         """Execute time-space filter on raw data files"""
+        
+        import time
+        start_time = time.time()
         
         try:
             _logger.info("Starting time-space filter operation")
             
             # Get files to process
+            st.info("🔍 Finding matching files...")
             time_filter = get_time_filter_from_sidebar()
             files = get_filtered_files(st.session_state.data_source, time_filter)
-            
+
             if not files:
-                return {'success': False, 'error': 'No files match the time filter from sidebar'}
+                return {'success': False, 'error': 'No files match the time filter'}
             
+            st.success(f"✓ Found {len(files)} files to process")
             _logger.info(f"Processing {len(files)} files")
             
-            # Load and concatenate all files
+            # Batch processing mode
+            if batch_processing:
+                st.info("🧠 Batch processing mode enabled - processing files individually")
+                return self._execute_batch_mode(
+                    files, org_time_params, dst_time_params, 
+                    org_spatial_params, dst_spatial_params,
+                    output_format, output_suffix, start_time
+                )
+            
+            # Load and concatenate all files with memory optimization
+            st.info("📂 Loading files (memory-optimized)...")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
             all_data = []
-            for file_path in files:
+            total_rows_loaded = 0
+            
+            # Memory-efficient data types (camelCase format)
+            dtype_mapping = {
+                'originLatitude': 'float32',
+                'originLongitude': 'float32',
+                'destinationLatitude': 'float32',
+                'destinationLongitude': 'float32',
+                'distance': 'float32'
+            }
+            
+            # Standard column mapping to camelCase
+            standard_columns = {
+                'org_lat': 'originLatitude',
+                'org_lng': 'originLongitude',
+                'dst_lat': 'destinationLatitude',
+                'dst_lng': 'destinationLongitude',
+                'start_time': 'startTime',
+                'end_time': 'endTime',
+                'distance': 'distance'
+            }
+            
+            for idx, file_path in enumerate(files):
                 try:
+                    file_name = Path(file_path).name
+                    status_text.text(f"⏳ Reading file {idx + 1} of {len(files)}: {file_name}")
+                    
                     # Determine if Snapp or Tapsi
                     if 'Snapp' in str(file_path) or 'snapp' in str(file_path).lower():
-                        # Snapp: no header
+                        # Snapp: no header, use memory-efficient dtypes
                         from config import DataColumnMetadata
-                        df = pd.read_csv(file_path, names=DataColumnMetadata.get_snapp_columns())
+                        df = pd.read_csv(
+                            file_path, 
+                            names=DataColumnMetadata.get_snapp_columns(),
+                            low_memory=True
+                        )
+                        # Rename to camelCase
+                        df = df.rename(columns=standard_columns)
                     else:
-                        # Tapsi: has header
-                        df = pd.read_csv(file_path)
-                        from config import DataColumnMetadata
-                        df = df.rename(columns=DataColumnMetadata.get_tapsi_mapping())
+                        # Tapsi: has header (already in camelCase format)
+                        df = pd.read_csv(file_path, low_memory=True)
+                    
+                    # Standardize column names to camelCase if needed
+                    if 'org_lat' in df.columns:
+                        df = df.rename(columns=standard_columns)
+                    
+                    # Only keep necessary columns to save memory
+                    required_cols = ['originLatitude', 'originLongitude', 'destinationLatitude', 
+                                   'destinationLongitude', 'startTime', 'endTime', 'distance']
+                    available_cols = [col for col in required_cols if col in df.columns]
+                    df = df[available_cols]
                     
                     all_data.append(df)
-                    _logger.info(f"Loaded {len(df)} rows from {Path(file_path).name}")
+                    total_rows_loaded += len(df)
+                    _logger.info(f"Loaded {len(df)} rows from {file_name}")
+                    
+                    # Update progress
+                    progress_bar.progress((idx + 1) / len(files))
+                    
                 except Exception as e:
                     _logger.warning(f"Error loading {file_path}: {e}")
+                    st.warning(f"⚠️ Error loading {Path(file_path).name}: {e}")
                     continue
             
-            if not all_data:
-                return {'success': False, 'error': 'Could not load any data from files'}
+            progress_bar.empty()
+            status_text.empty()
             
-            # Combine all data
-            combined_df = pd.concat(all_data, ignore_index=True)
-            initial_count = len(combined_df)
-            _logger.info(f"Combined {initial_count} total trips")
+            if not all_data:
+                return {'success': False, 'error': 'Could not load any data'}
+            
+            st.success(f"✓ Loaded {total_rows_loaded:,} records from {len(all_data)} files")
+            
+            # Combine all data (memory-optimized)
+            with st.spinner("🔄 Combining data (this may take a moment for large datasets)..."):
+                try:
+                    # Use concat with copy=False to save memory
+                    combined_df = pd.concat(all_data, ignore_index=True, copy=False)
+                    initial_count = len(combined_df)
+                    
+                    # Clear the original list to free memory
+                    all_data.clear()
+                    
+                    _logger.info(f"Combined {initial_count} total trips")
+                except MemoryError:
+                    st.error("❌ **Memory Error**: Dataset is too large to process at once.")
+                    st.info("💡 **Suggestion**: Try filtering by a smaller date range in the sidebar first.")
+                    return {'success': False, 'error': 'Insufficient memory to combine data'}
+            
+            st.info(f"📊 Total trips: **{initial_count:,}** records")
+            
+            # Memory warning for very large datasets
+            if initial_count > 10_000_000:
+                st.warning(f"⚠️ Large dataset detected ({initial_count:,} records). Processing may be slow.")
             
             # Parse datetime columns
-            combined_df['start_datetime'] = pd.to_datetime(combined_df['start_time'], errors='coerce')
-            combined_df['end_datetime'] = pd.to_datetime(combined_df['end_time'], errors='coerce')
+            with st.spinner("📅 Processing dates and times..."):
+                combined_df['startDatetime'] = pd.to_datetime(combined_df['startTime'], errors='coerce')
+                combined_df['endDatetime'] = pd.to_datetime(combined_df['endTime'], errors='coerce')
+            st.success("✓ Date/time processing complete")
+            
+            # Create a summary container
+            filter_summary = st.container()
             
             # Apply time filters
             if org_time_params.get('enabled'):
-                combined_df = self._apply_time_filter(
-                    combined_df, 'start_datetime', org_time_params
-                )
-                _logger.info(f"After origin time filter: {len(combined_df)} trips")
+                with st.spinner("⏰ Applying origin time filter..."):
+                    before_count = len(combined_df)
+                    combined_df = self._apply_time_filter(
+                        combined_df, 'startDatetime', org_time_params
+                    )
+                    after_count = len(combined_df)
+                    filtered_out = before_count - after_count
+                    _logger.info(f"After origin time filter: {after_count} trips")
+                
+                st.success(f"✓ Origin time filter: {before_count:,} → {after_count:,} records (removed: {filtered_out:,})")
             
             if dst_time_params.get('enabled'):
-                combined_df = self._apply_time_filter(
-                    combined_df, 'end_datetime', dst_time_params
-                )
-                _logger.info(f"After destination time filter: {len(combined_df)} trips")
+                with st.spinner("⏰ Applying destination time filter..."):
+                    before_count = len(combined_df)
+                    combined_df = self._apply_time_filter(
+                        combined_df, 'endDatetime', dst_time_params
+                    )
+                    after_count = len(combined_df)
+                    filtered_out = before_count - after_count
+                    _logger.info(f"After destination time filter: {after_count} trips")
+                
+                st.success(f"✓ Destination time filter: {before_count:,} → {after_count:,} records (removed: {filtered_out:,})")
             
             # Apply spatial filters
             if org_spatial_params.get('enabled'):
-                combined_df = self._apply_spatial_filter(
-                    combined_df, 'org', org_spatial_params
-                )
-                _logger.info(f"After origin spatial filter: {len(combined_df)} trips")
+                with st.spinner("📍 Applying origin spatial filter..."):
+                    before_count = len(combined_df)
+                    combined_df = self._apply_spatial_filter(
+                        combined_df, 'org', org_spatial_params
+                    )
+                    after_count = len(combined_df)
+                    filtered_out = before_count - after_count
+                    _logger.info(f"After origin spatial filter: {after_count} trips")
+                
+                st.success(f"✓ Origin spatial filter: {before_count:,} → {after_count:,} records (removed: {filtered_out:,})")
             
             if dst_spatial_params.get('enabled'):
-                combined_df = self._apply_spatial_filter(
-                    combined_df, 'dst', dst_spatial_params
-                )
-                _logger.info(f"After destination spatial filter: {len(combined_df)} trips")
+                with st.spinner("📍 Applying destination spatial filter..."):
+                    before_count = len(combined_df)
+                    combined_df = self._apply_spatial_filter(
+                        combined_df, 'dst', dst_spatial_params
+                    )
+                    after_count = len(combined_df)
+                    filtered_out = before_count - after_count
+                    _logger.info(f"After destination spatial filter: {after_count} trips")
+                
+                st.success(f"✓ Destination spatial filter: {before_count:,} → {after_count:,} records (removed: {filtered_out:,})")
             
             final_count = len(combined_df)
             
+            # Show final summary
+            st.markdown("---")
+            st.info(f"📈 **Final Result**: From {initial_count:,} initial records, {final_count:,} records remain ({(final_count/initial_count)*100:.1f}%)")
+            
             if final_count == 0:
+                st.error("❌ No trips match the filter criteria")
                 return {'success': False, 'error': 'No trips match the filter criteria'}
             
             # Save output
             config = Config()
+            st.markdown("---")
+            
             if output_format == "csv":
-                output_path = config.aggregated_path / f"filtered_trips{output_suffix}.csv"
-                combined_df.to_csv(output_path, index=False)
-                _logger.info(f"Saved CSV to {output_path}")
+                with st.spinner("💾 Saving CSV file..."):
+                    output_path = config.aggregated_path / f"filtered_trips{output_suffix}.csv"
+                    combined_df.to_csv(output_path, index=False)
+                    _logger.info(f"Saved CSV to {output_path}")
+                st.success(f"✓ CSV file saved: `{output_path.name}`")
             else:
-                # For shapefile, we need to create geometry
-                gdf = gpd.GeoDataFrame(
-                    combined_df,
-                    geometry=gpd.points_from_xy(combined_df.org_lng, combined_df.org_lat),
-                    crs="EPSG:4326"
-                )
-                output_path = config.gis_output_path / f"filtered_trips{output_suffix}"
-                output_path.mkdir(exist_ok=True, parents=True)
-                shp_path = output_path / f"filtered_trips{output_suffix}.shp"
-                gdf.to_file(shp_path)
-                _logger.info(f"Saved shapefile to {shp_path}")
-                output_path = shp_path
+                with st.spinner("💾 Creating and saving Shapefile..."):
+                    # For shapefile, we need to create geometry
+                    gdf = gpd.GeoDataFrame(
+                        combined_df,
+                        geometry=gpd.points_from_xy(combined_df.originLongitude, combined_df.originLatitude),
+                        crs="EPSG:4326"
+                    )
+                    output_path = config.gis_output_path / f"filtered_trips{output_suffix}"
+                    output_path.mkdir(exist_ok=True, parents=True)
+                    shp_path = output_path / f"filtered_trips{output_suffix}.shp"
+                    gdf.to_file(shp_path)
+                    _logger.info(f"Saved shapefile to {shp_path}")
+                    output_path = shp_path
+                st.success(f"✓ Shapefile saved: `{output_path.name}`")
+            
+            # Calculate total processing time
+            end_time = time.time()
+            total_time = end_time - start_time
+            
+            # Format time nicely
+            if total_time < 60:
+                time_str = f"{total_time:.1f} seconds"
+            elif total_time < 3600:
+                minutes = int(total_time // 60)
+                seconds = int(total_time % 60)
+                time_str = f"{minutes}m {seconds}s"
+            else:
+                hours = int(total_time // 3600)
+                minutes = int((total_time % 3600) // 60)
+                time_str = f"{hours}h {minutes}m"
+            
+            # Show final summary in a nice box
+            st.markdown("---")
+            st.success("### ✅ Operation completed successfully!")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Initial Records", f"{initial_count:,}")
+            with col2:
+                st.metric("Final Records", f"{final_count:,}", 
+                         delta=f"{((final_count/initial_count)*100):.1f}%")
+            with col3:
+                st.metric("Processing Time", time_str)
+            
+            st.info(f"📁 **Output Path**: `{output_path}`")
+            
+            # Calculate processing speed
+            records_per_second = initial_count / total_time if total_time > 0 else 0
+            st.caption(f"⚡ Processing Speed: {records_per_second:,.0f} records/second")
             
             return {
                 'success': True,
                 'output_path': str(output_path),
                 'initial_count': initial_count,
                 'filtered_count': final_count,
-                'filter_rate': f"{(final_count/initial_count)*100:.1f}%"
+                'filter_rate': f"{(final_count/initial_count)*100:.1f}%",
+                'processing_time': time_str,
+                'processing_time_seconds': total_time,
+                'records_per_second': records_per_second
             }
             
         except Exception as e:
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
             _logger.error(f"Error in time-space filter: {e}")
             import traceback
             _logger.error(traceback.format_exc())
-            return {'success': False, 'error': str(e)}
+            
+            st.error(f"❌ **Processing Error**: {str(e)}")
+            st.caption(f"⏱️ Time elapsed before error: {elapsed_time:.1f} seconds")
+            
+            with st.expander("🔍 Error Details (for developers)"):
+                st.code(traceback.format_exc())
+            
+            return {'success': False, 'error': str(e), 'elapsed_time': elapsed_time}
+    
+    def _execute_batch_mode(self, files, org_time_params, dst_time_params,
+                           org_spatial_params, dst_spatial_params,
+                           output_format, output_suffix, start_time) -> Dict[str, Any]:
+        """Execute filter in batch mode - process files one by one"""
+        
+        config = Config()
+        output_path = config.aggregated_path / f"filtered_trips{output_suffix}.csv"
+        
+        # Create output file
+        first_batch = True
+        total_initial = 0
+        total_filtered = 0
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Memory-efficient data types (camelCase format)
+        dtype_mapping = {
+            'originLatitude': 'float32',
+            'originLongitude': 'float32',
+            'destinationLatitude': 'float32',
+            'destinationLongitude': 'float32',
+            'distance': 'float32'
+        }
+        
+        # Standard column mapping to camelCase
+        standard_columns = {
+            'org_lat': 'originLatitude',
+            'org_lng': 'originLongitude',
+            'dst_lat': 'destinationLatitude',
+            'dst_lng': 'destinationLongitude',
+            'start_time': 'startTime',
+            'end_time': 'endTime',
+            'distance': 'distance'
+        }
+        
+        for idx, file_path in enumerate(files):
+            try:
+                file_name = Path(file_path).name
+                status_text.text(f"⏳ Processing file {idx + 1} of {len(files)}: {file_name}")
+                
+                # Load single file
+                if 'Snapp' in str(file_path) or 'snapp' in str(file_path).lower():
+                    from config import DataColumnMetadata
+                    df = pd.read_csv(
+                        file_path,
+                        names=DataColumnMetadata.get_snapp_columns(),
+                        low_memory=True
+                    )
+                    # Rename to camelCase
+                    df = df.rename(columns=standard_columns)
+                else:
+                    # Tapsi: has header (already in camelCase format)
+                    df = pd.read_csv(file_path, low_memory=True)
+                
+                # Standardize column names to camelCase if needed
+                if 'org_lat' in df.columns:
+                    df = df.rename(columns=standard_columns)
+                
+                initial_count = len(df)
+                total_initial += initial_count
+                
+                # Parse datetime
+                df['startDatetime'] = pd.to_datetime(df['startTime'], errors='coerce')
+                df['endDatetime'] = pd.to_datetime(df['endTime'], errors='coerce')
+                
+                # Apply filters
+                if org_time_params.get('enabled'):
+                    df = self._apply_time_filter(df, 'startDatetime', org_time_params)
+                
+                if dst_time_params.get('enabled'):
+                    df = self._apply_time_filter(df, 'endDatetime', dst_time_params)
+                
+                if org_spatial_params.get('enabled'):
+                    df = self._apply_spatial_filter(df, 'org', org_spatial_params)
+                
+                if dst_spatial_params.get('enabled'):
+                    df = self._apply_spatial_filter(df, 'dst', dst_spatial_params)
+                
+                filtered_count = len(df)
+                total_filtered += filtered_count
+                
+                # Append to output file
+                if filtered_count > 0:
+                    df.to_csv(output_path, mode='a' if not first_batch else 'w',
+                             header=first_batch, index=False)
+                    first_batch = False
+                
+                _logger.info(f"File {file_name}: {initial_count} → {filtered_count} records")
+                progress_bar.progress((idx + 1) / len(files))
+                
+            except Exception as e:
+                _logger.warning(f"Error processing {file_path}: {e}")
+                st.warning(f"⚠️ Error processing {Path(file_path).name}: {e}")
+                continue
+        
+        progress_bar.empty()
+        status_text.empty()
+        
+        if total_filtered == 0:
+            st.error("❌ No trips match the filter criteria")
+            return {'success': False, 'error': 'No trips match the filter criteria'}
+        
+        # Calculate time
+        end_time = time.time()
+        total_time = end_time - start_time
+        
+        if total_time < 60:
+            time_str = f"{total_time:.1f} seconds"
+        elif total_time < 3600:
+            minutes = int(total_time // 60)
+            seconds = int(total_time % 60)
+            time_str = f"{minutes}m {seconds}s"
+        else:
+            hours = int(total_time // 3600)
+            minutes = int((total_time % 3600) // 60)
+            time_str = f"{hours}h {minutes}m"
+        
+        # Show success
+        st.markdown("---")
+        st.success("### ✅ Batch processing completed successfully!")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Initial Records", f"{total_initial:,}")
+        with col2:
+            st.metric("Final Records", f"{total_filtered:,}",
+                     delta=f"{((total_filtered/total_initial)*100):.1f}%")
+        with col3:
+            st.metric("Processing Time", time_str)
+        
+        st.info(f"📁 **Output Path**: `{output_path}`")
+        
+        records_per_second = total_initial / total_time if total_time > 0 else 0
+        st.caption(f"⚡ Processing Speed: {records_per_second:,.0f} records/second")
+        
+        return {
+            'success': True,
+            'output_path': str(output_path),
+            'initial_count': total_initial,
+            'filtered_count': total_filtered,
+            'filter_rate': f"{(total_filtered/total_initial)*100:.1f}%",
+            'processing_time': time_str,
+            'processing_time_seconds': total_time,
+            'records_per_second': records_per_second,
+            'batch_mode': True
+        }
     
     def _apply_time_filter(self, df: pd.DataFrame, datetime_col: str, 
                           params: Dict[str, Any]) -> pd.DataFrame:
@@ -475,8 +810,13 @@ class TimeSpaceFilterOperation(BaseOperation):
                              params: Dict[str, Any]) -> pd.DataFrame:
         """Apply spatial filter (coordinates or shapefile zones)"""
         
-        lat_col = f"{endpoint}_lat"
-        lng_col = f"{endpoint}_lng"
+        # Use camelCase column names
+        if endpoint == 'org':
+            lat_col = 'originLatitude'
+            lng_col = 'originLongitude'
+        else:  # dst
+            lat_col = 'destinationLatitude'
+            lng_col = 'destinationLongitude'
         
         mode = params.get('mode', 'coordinates')
         

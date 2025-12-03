@@ -21,69 +21,74 @@ if 'engine' not in st.session_state:
     config = Config()
     st.session_state.engine = DataEngine(config=config)
 
-# SIDEBAR - Data Source and Time Filters
+# SIDEBAR - Compact Filters
 with st.sidebar:
-    st.title("⚙️ Global Settings")
-    st.markdown("---")
-    
-    # Data Source
-    st.subheader("📂 Data Source")
+    # Data Source (compact)
+    st.markdown("**📂 Data Source**")
     data_source = st.radio(
-        "Select source:",
+        "Source:",
         options=["both", "snapp", "tapsi"],
         format_func=lambda x: {"both": "Both", "snapp": "Snapp", "tapsi": "Tapsi"}[x],
         horizontal=True,
-        key="data_source_select"
+        key="data_source_select",
+        label_visibility="collapsed"
     )
     st.session_state.data_source = data_source
     
-    st.markdown("---")
+    st.divider()
     
-    # Time Filter
-    st.subheader("📅 Time Filter")
+    # Time Filter (compact)
+    st.markdown("**📅 Time Filter**")
     filter_type = st.selectbox(
-        "Filter type:",
+        "Type:",
         options=list(constants.FILTER_TYPE_LABELS.keys()),
         format_func=lambda x: constants.FILTER_TYPE_LABELS[x],
-        key="filter_type_select"
+        key="filter_type_select",
+        label_visibility="collapsed"
     )
     st.session_state.filter_type = filter_type
     
     params = {}
     if filter_type == "specific_month":
-        year = st.text_input("Year:", value="1404", key="year_input")
-        month = st.selectbox(
-            "Month:", 
-            options=list(constants.PERSIAN_MONTHS.keys()),
-            format_func=lambda x: f"{x} - {constants.PERSIAN_MONTHS[x]}",
-            key="month_select"
-        )
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            year = st.text_input("Year", value="1404", key="year_input", label_visibility="collapsed", placeholder="Year")
+        with col2:
+            month = st.selectbox(
+                "Month", 
+                options=list(constants.PERSIAN_MONTHS.keys()),
+                format_func=lambda x: f"{x}",
+                key="month_select",
+                label_visibility="collapsed"
+            )
         params = {"year": year, "month": month}
     elif filter_type == "year":
-        year = st.text_input("Year:", value="1404", key="year_input_y")
+        year = st.text_input("Year", value="1404", key="year_input_y", label_visibility="collapsed", placeholder="Year")
         params = {"year": year}
     elif filter_type == "season":
-        year = st.text_input("Year:", value="1404", key="year_input_s")
+        year = st.text_input("Year", value="1404", key="year_input_s", label_visibility="collapsed", placeholder="Year")
         season = st.selectbox(
-            "Season:",
+            "Season",
             options=list(constants.PERSIAN_SEASONS.keys()),
             format_func=lambda x: constants.PERSIAN_SEASONS[x],
-            key="season_select"
+            key="season_select",
+            label_visibility="collapsed"
         )
         params = {"year": year, "season": season}
     elif filter_type == "month_all_years":
         month = st.selectbox(
-            "Month:",
+            "Month",
             options=list(constants.PERSIAN_MONTHS.keys()),
             format_func=lambda x: f"{x} - {constants.PERSIAN_MONTHS[x]}",
-            key="month_all_select"
+            key="month_all_select",
+            label_visibility="collapsed"
         )
         params = {"month": month}
     
     st.session_state.time_filter_params = params
     
-    st.markdown("---")
-    st.caption("📊 Data Analysis Tool - Modular v3.0")
+    st.divider()
+    st.caption("📊 v3.0")
 
 # Main layout
 st.title("📊 Data Analysis Tool")
