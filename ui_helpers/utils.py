@@ -87,6 +87,25 @@ def get_aggregated_files() -> List[Path]:
         return []
 
 
+def get_raw_files() -> Dict[str, List[Path]]:
+    """
+    Get list of raw CSV files from both Snapp and Tapsi directories.
+    
+    Returns:
+        Dictionary with 'snapp' and 'tapsi' keys containing lists of file paths
+    """
+    try:
+        config = Config()
+        snapp_files = list(config.snapp_raw_path.glob("*.csv")) if config.snapp_raw_path.exists() else []
+        tapsi_files = list(config.tapsi_raw_path.glob("*.csv")) if config.tapsi_raw_path.exists() else []
+        return {
+            "snapp": snapp_files,
+            "tapsi": tapsi_files
+        }
+    except Exception:
+        return {"snapp": [], "tapsi": []}
+
+
 def get_shapefile_zones(boundary_source: str) -> Dict[str, List]:
     """
     Get unique zone values from a shapefile for multi-select filtering.
