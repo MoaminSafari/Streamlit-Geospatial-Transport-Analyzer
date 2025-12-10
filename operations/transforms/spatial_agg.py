@@ -7,7 +7,7 @@ import pandas as pd
 import logging
 from typing import Dict, Any, Optional
 from pathlib import Path
-from operations.base import BaseOperation
+from operations.base import BaseOperation, DataSourceHelper
 from operations.config import GRID_SIZES, DEFAULT_GRID_SIZE, ENDPOINT_OPTIONS
 from ui_helpers import utils
 
@@ -35,28 +35,45 @@ class SpatialAggOperation(BaseOperation):
         
         file_options = {f.name: str(f) for f in aggregated_files}
         
+        st.markdown("### Configuration")
         selected_file = st.selectbox("Input file:", options=list(file_options.keys()))
         
-        col1, col2 = st.columns(2)
-        with col1:
-            endpoint = st.selectbox("Target field:", 
-                                   options=list(ENDPOINT_OPTIONS.keys()),
-                                   format_func=lambda x: ENDPOINT_OPTIONS[x])
-        with col2:
-            grid_size = st.selectbox("Grid size:", 
-                                    options=list(GRID_SIZES.keys()),
-                                    index=list(GRID_SIZES.keys()).index(DEFAULT_GRID_SIZE))
+        # Load file preview for column selection
+        try:
+            preview_df = pd.read_csv(file_options[selected_file], nrows=5)
+            
+            # Coordinate column selection
+            lat_col, lon_col = DataSourceHelper.render_coordinate_selector(preview_df)
+            
+            # Show preview
+            with st.expander("📋 Preview first 5 rows"):
+                st.dataframe(preview_df)
+                
+        except Exception as e:
+            st.error(f"❌ Error loading file: {e}")
+            return None
+        
+        st.markdown("---")
+        
+        grid_size = st.selectbox("Grid size:", 
+                                options=list(GRID_SIZES.keys()),
+                                index=list(GRID_SIZES.keys()).index(DEFAULT_GRID_SIZE))
+        
+        # Aggregation field selection
+        st.markdown("### Aggregation Settings")
+        aggregation_fields = DataSourceHelper.render_aggregation_field_selector(preview_df, lat_col, lon_col)
         
         grid_meters = GRID_SIZES[grid_size]
-        # Auto-generate suffix based on time filter
-        time_suffix = utils.get_time_filter_suffix()
-        default_suffix = f"_{time_suffix}_spatial_{grid_size}_{endpoint}"
+        # Simple suffix without time filter for manual files
+        default_suffix = f"_spatial_{grid_size}"
         output_suffix = st.text_input("Output suffix:", value=default_suffix)
         
         if st.button("▶️ Run", type="primary", width='stretch'):
             return {
                 'input_file': file_options[selected_file],
-                'endpoint': endpoint,
+                'manual_lat_col': lat_col,
+                'manual_lon_col': lon_col,
+                'aggregation_fields': aggregation_fields,
                 'grid_size_meters': grid_meters,
                 'output_suffix': output_suffix
             }
@@ -66,37 +83,60 @@ class SpatialAggOperation(BaseOperation):
     def execute(self, **kwargs) -> Dict[str, Any]:
         """Execute spatial aggregation"""
         input_file = kwargs['input_file']
-        endpoint = kwargs['endpoint']
         grid_size_meters = kwargs['grid_size_meters']
         output_suffix = kwargs['output_suffix']
+        manual_lat_col = kwargs.get('manual_lat_col')
+        manual_lon_col = kwargs.get('manual_lon_col')
+        aggregation_fields = kwargs.get('aggregation_fields', [])
         
         try:
-            _logger.info(f"spatial_agg start input={input_file} endpoint={endpoint} grid={grid_size_meters}")
+            _logger.info(f"spatial_agg start input={input_file} grid={grid_size_meters}")
             df = pd.read_csv(input_file)
             
-            if endpoint == 'origin':
-                lat_col = next((c for c in ['org_lat', 'origin_lat'] if c in df.columns), None)
-                lon_col = next((c for c in ['org_lng', 'org_long', 'origin_lng', 'origin_long'] if c in df.columns), None)
-            elif endpoint == 'destination':
-                lat_col = next((c for c in ['dst_lat', 'dest_lat', 'destination_lat'] if c in df.columns), None)
-                lon_col = next((c for c in ['dst_lng', 'dst_long', 'dest_lng', 'dest_long'] if c in df.columns), None)
-            else:
-                lat_col = next((c for c in ['org_lat', 'dst_lat', 'origin_lat', 'dest_lat', 'latitude', 'lat'] if c in df.columns), None)
-                lon_col = next((c for c in ['org_lng', 'org_long', 'dst_lng', 'dst_long', 'origin_lng', 'dest_lng', 'longitude', 'lon', 'lng'] if c in df.columns), None)
+            # Use manual column selection
+            lat_col, lon_col = DataSourceHelper.get_coordinate_columns(
+                df, endpoint='all', manual_lat=manual_lat_col, manual_lon=manual_lon_col
+            )
             
             if not lat_col or not lon_col:
-                return {"success": False, "error": "Coordinate columns not found"}
+                error_msg = f"Coordinate columns not found. Available: {', '.join(df.columns.tolist())}"
+                _logger.error(error_msg)
+                return {"success": False, "error": error_msg}
             
+            _logger.info(f"Using coordinates: lat={lat_col}, lon={lon_col}")
+            
+            # Create grid bins (using camelCase names)
             grid_deg = grid_size_meters / 111000.0
-            df['x_bin'] = (df[lon_col] / grid_deg).astype('Int64')
-            df['y_bin'] = (df[lat_col] / grid_deg).astype('Int64')
-            agg = df.groupby(['x_bin', 'y_bin']).size().reset_index(name='count')
-            agg['longitude'] = agg['x_bin'] * grid_deg + grid_deg / 2
-            agg['latitude'] = agg['y_bin'] * grid_deg + grid_deg / 2
+            df['xBin'] = (df[lon_col] / grid_deg).astype('Int64')
+            df['yBin'] = (df[lat_col] / grid_deg).astype('Int64')
+            
+            # Determine aggregation strategy
+            if aggregation_fields:
+                # Aggregate selected fields
+                available_agg_fields = [f for f in aggregation_fields if f in df.columns]
+                if not available_agg_fields:
+                    _logger.warning("Selected aggregation fields not found, using count")
+                    df['count'] = 1
+                    available_agg_fields = ['count']
+                
+                agg_dict = {field: 'sum' for field in available_agg_fields}
+                agg = df.groupby(['xBin', 'yBin']).agg(agg_dict).reset_index()
+            else:
+                # Just count records
+                df['count'] = 1
+                agg = df.groupby(['xBin', 'yBin'])['count'].sum().reset_index()
+            
+            # Add centroid coordinates
+            agg['longitude'] = agg['xBin'] * grid_deg + grid_deg / 2
+            agg['latitude'] = agg['yBin'] * grid_deg + grid_deg / 2
+            
+            # Reorder columns
+            cols = ['longitude', 'latitude'] + [c for c in agg.columns if c not in ['longitude', 'latitude', 'xBin', 'yBin']]
+            agg = agg[cols]
             
             input_path = Path(input_file)
             output_path = input_path.parent / f"{input_path.stem}{output_suffix}.csv"
-            agg[['longitude', 'latitude', 'count']].to_csv(output_path, index=False)
+            agg.to_csv(output_path, index=False)
             
             _logger.info(f"spatial_agg success cells={len(agg)}")
             return {

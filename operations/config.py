@@ -4,34 +4,150 @@ Centralized settings that are shared across all operations
 """
 
 from typing import Dict, List
+import os
+from pathlib import Path
+import geopandas as gpd
 
 
 # ==========================================
-# Boundary/Shapefile Configuration
+# Dynamic Shapefile Discovery
 # ==========================================
 
-BOUNDARY_SOURCES = {
-    "neighborhoods": "Neighborhoods",
-    "districts": "Districts",
-    "subregions": "Subregions",
-    "traffic_zones": "Traffic Zones"
-}
+def _get_layers_path():
+    """Get the GIS Layers directory path."""
+    # Use relative path from this file
+    current_file = Path(__file__).resolve()
+    helper_scripts = current_file.parent.parent
+    project_root = helper_scripts.parent
+    return project_root / "GIS FIles" / "Layers"
 
-# Attribute fields for each boundary source
-BOUNDARY_ATTRIBUTE_FIELDS = {
-    "neighborhoods": ["CODE", "NAME_MAHAL", "NAME"],
-    "districts": ["DISTRICT", "NAME"],
-    "subregions": ["SUBREGION", "NAME"],
-    "traffic_zones": ["ZoneNumber"]
-}
 
-# Default join field for each boundary
-BOUNDARY_DEFAULT_FIELD = {
-    "neighborhoods": "CODE",
-    "districts": "DISTRICT",
-    "subregions": "SUBREGION",
-    "traffic_zones": "ZoneNumber"
-}
+def _discover_shapefiles():
+    """
+    Automatically discover all shapefiles in the Layers directory.
+    
+    Returns:
+        Dict mapping shapefile key to display name
+    """
+    layers_path = _get_layers_path()
+    
+    if not layers_path.exists():
+        return {}
+    
+    shapefiles = {}
+    
+    # Scan all subdirectories in Layers folder
+    for item in layers_path.iterdir():
+        if item.is_dir() and item.name != "Output":
+            # Check if this directory contains a shapefile
+            shp_files = list(item.glob("*.shp"))
+            if shp_files:
+                # Use directory name as key
+                key = item.name
+                # Convert to readable display name (replace _ with space, title case)
+                display_name = key.replace("_", " ").title()
+                shapefiles[key] = display_name
+    
+    return shapefiles
+
+
+def _get_shapefile_fields(shapefile_key: str) -> List[str]:
+    """
+    Get available fields from a shapefile.
+    
+    Args:
+        shapefile_key: The shapefile identifier (directory name)
+    
+    Returns:
+        List of field names
+    """
+    try:
+        layers_path = _get_layers_path()
+        shapefile_dir = layers_path / shapefile_key
+        
+        # Find the .shp file
+        shp_files = list(shapefile_dir.glob("*.shp"))
+        if not shp_files:
+            return ["OBJECTID"]
+        
+        # Read shapefile and get columns (excluding geometry)
+        gdf = gpd.read_file(shp_files[0])
+        fields = [col for col in gdf.columns if col != 'geometry']
+        
+        return fields if fields else ["OBJECTID"]
+    except:
+        # Fallback to common field
+        return ["OBJECTID"]
+
+
+def _get_default_field(shapefile_key: str, fields: List[str]) -> str:
+    """
+    Determine the default field for a shapefile based on available fields.
+    
+    Args:
+        shapefile_key: The shapefile identifier
+        fields: List of available fields
+    
+    Returns:
+        Default field name
+    """
+    # Priority order for default field selection
+    priority_fields = [
+        "CODE", "DISTRICT", "SUBREGION", "ZoneNumber", 
+        "OBJECTID", "ID", "FID", "Name"
+    ]
+    
+    for field in priority_fields:
+        if field in fields:
+            return field
+    
+    # Return first available field as fallback
+    return fields[0] if fields else "OBJECTID"
+
+
+# ==========================================
+# Boundary/Shapefile Configuration (Dynamic)
+# ==========================================
+
+# Discover all available shapefiles automatically
+BOUNDARY_SOURCES = _discover_shapefiles()
+
+# Cache for shapefile fields (to avoid repeated file reads)
+_SHAPEFILE_FIELDS_CACHE = {}
+
+
+def get_shapefile_fields(shapefile_key: str) -> List[str]:
+    """
+    Get available fields for a shapefile (cached).
+    
+    Args:
+        shapefile_key: The shapefile identifier
+    
+    Returns:
+        List of field names
+    """
+    if shapefile_key not in _SHAPEFILE_FIELDS_CACHE:
+        _SHAPEFILE_FIELDS_CACHE[shapefile_key] = _get_shapefile_fields(shapefile_key)
+    return _SHAPEFILE_FIELDS_CACHE[shapefile_key]
+
+
+def get_default_field(shapefile_key: str) -> str:
+    """
+    Get the default field for a shapefile.
+    
+    Args:
+        shapefile_key: The shapefile identifier
+    
+    Returns:
+        Default field name
+    """
+    fields = get_shapefile_fields(shapefile_key)
+    return _get_default_field(shapefile_key, fields)
+
+
+# For backward compatibility - these will be generated dynamically
+BOUNDARY_ATTRIBUTE_FIELDS = {}
+BOUNDARY_DEFAULT_FIELD = {}
 
 
 # ==========================================
@@ -94,33 +210,33 @@ FILTER_FIELD_OPTIONS = {
 # Aggregation Field Configuration
 # ==========================================
 
-# Available aggregation fields by endpoint
+# Available aggregation fields by endpoint (using camelCase)
 AGGREGATION_FIELDS = {
     "origin": {
-        "snapp_org_count": "Snapp Count",
-        "tapsi_org_count": "Tapsi Count",
-        "total_origin": "Total Count"
+        "snappOriginCount": "Snapp Count",
+        "tapsiOriginCount": "Tapsi Count",
+        "totalOrigin": "Total Count"
     },
     "destination": {
-        "snapp_dst_count": "Snapp Count",
-        "tapsi_dst_count": "Tapsi Count",
-        "total_destination": "Total Count"
+        "snappDestinationCount": "Snapp Count",
+        "tapsiDestinationCount": "Tapsi Count",
+        "totalDestination": "Total Count"
     },
     "all": {
-        "snapp_org_count": "Snapp Origin Count",
-        "tapsi_org_count": "Tapsi Origin Count",
-        "total_origin": "Total Origin Count",
-        "snapp_dst_count": "Snapp Destination Count",
-        "tapsi_dst_count": "Tapsi Destination Count",
-        "total_destination": "Total Destination Count"
+        "snappOriginCount": "Snapp Origin Count",
+        "tapsiOriginCount": "Tapsi Origin Count",
+        "totalOrigin": "Total Origin Count",
+        "snappDestinationCount": "Snapp Destination Count",
+        "tapsiDestinationCount": "Tapsi Destination Count",
+        "totalDestination": "Total Destination Count"
     }
 }
 
-# Default aggregation fields by endpoint
+# Default aggregation fields by endpoint (using camelCase)
 DEFAULT_AGGREGATION_FIELDS = {
-    "origin": ["total_origin"],
-    "destination": ["total_destination"],
-    "all": ["total_origin", "total_destination"]
+    "origin": ["totalOrigin"],
+    "destination": ["totalDestination"],
+    "all": ["totalOrigin", "totalDestination"]
 }
 
 # Aggregation levels
@@ -137,39 +253,39 @@ AGGREGATION_LEVELS = {
 
 def get_aggregation_fields_for_endpoint(endpoint: str, level: str = "total") -> List[str]:
     """
-    Get aggregation fields based on endpoint and level.
+    Get aggregation fields based on endpoint and level (camelCase names).
     
     Args:
         endpoint: 'origin', 'destination', or 'all'
         level: 'total', 'separate', or 'all'
     
     Returns:
-        List of field names to aggregate
+        List of field names to aggregate (in camelCase)
     """
     if endpoint == "origin":
         if level == "total":
-            return ["total_origin"]
+            return ["totalOrigin"]
         elif level == "separate":
-            return ["snapp_org_count", "tapsi_org_count"]
+            return ["snappOriginCount", "tapsiOriginCount"]
         else:  # all
-            return ["snapp_org_count", "tapsi_org_count", "total_origin"]
+            return ["snappOriginCount", "tapsiOriginCount", "totalOrigin"]
     
     elif endpoint == "destination":
         if level == "total":
-            return ["total_destination"]
+            return ["totalDestination"]
         elif level == "separate":
-            return ["snapp_dst_count", "tapsi_dst_count"]
+            return ["snappDestinationCount", "tapsiDestinationCount"]
         else:  # all
-            return ["snapp_dst_count", "tapsi_dst_count", "total_destination"]
+            return ["snappDestinationCount", "tapsiDestinationCount", "totalDestination"]
     
     else:  # all
         if level == "total":
-            return ["total_origin", "total_destination"]
+            return ["totalOrigin", "totalDestination"]
         elif level == "separate":
-            return ["snapp_org_count", "tapsi_org_count", "snapp_dst_count", "tapsi_dst_count"]
+            return ["snappOriginCount", "tapsiOriginCount", "snappDestinationCount", "tapsiDestinationCount"]
         else:  # all
-            return ["snapp_org_count", "tapsi_org_count", "total_origin",
-                   "snapp_dst_count", "tapsi_dst_count", "total_destination"]
+            return ["snappOriginCount", "tapsiOriginCount", "totalOrigin",
+                   "snappDestinationCount", "tapsiDestinationCount", "totalDestination"]
 
 
 def get_output_path(base_name: str, suffix: str, format: str = "csv"):

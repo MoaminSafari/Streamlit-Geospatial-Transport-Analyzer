@@ -103,20 +103,32 @@ class BoundaryFilterOperation(BaseOperation):
         with col3:
             boundary_options = list(BOUNDARY_SOURCES.keys()) + ["shapefile"]
             boundary_labels = {**BOUNDARY_SOURCES, "shapefile": "Custom Shapefile"}
-            boundary_source = st.radio("Boundary source:", 
-                                      options=boundary_options,
-                                      format_func=lambda x: boundary_labels[x])
+            boundary_source = st.selectbox("Boundary source:", 
+                                          options=boundary_options,
+                                          format_func=lambda x: boundary_labels[x])
         with col4:
             output_format = st.selectbox("Output format:", options=OUTPUT_FORMATS)
+        
+        # Inside/Outside selection
+        st.markdown("**🎯 Filter mode:**")
+        filter_mode = st.radio(
+            "Keep points:",
+            options=["inside", "outside"],
+            format_func=lambda x: {
+                "inside": "✅ Inside boundary (نقاط داخل محدوده)",
+                "outside": "❌ Outside boundary (نقاط خارج محدوده)"
+            }[x],
+            index=0,
+            horizontal=True,
+            help="Choose whether to keep points inside or outside the boundary"
+        )
         
         config_obj = Config()
         if boundary_source == "shapefile":
             boundary_path = st.text_input("Shapefile path:", value="")
-        elif boundary_source == "neighborhoods":
-            boundary_path = str(config_obj.neighborhoods_shapefile)
-            st.caption(f"📁 {boundary_path}")
         else:
-            boundary_path = str(config_obj.districts_shapefile)
+            # Use dynamic shapefile path discovery
+            boundary_path = str(config_obj.get_shapefile_path(boundary_source))
             st.caption(f"📁 {boundary_path}")
         
         # Auto-generate suffix based on time filter and boundary
@@ -129,6 +141,7 @@ class BoundaryFilterOperation(BaseOperation):
                 'boundary_source': boundary_source,
                 'boundary_path': boundary_path,
                 'filter_field': filter_field,
+                'filter_mode': filter_mode,
                 'output_suffix': output_suffix,
                 'output_format': output_format,
                 'data_source_type': data_source_type,
@@ -153,6 +166,7 @@ class BoundaryFilterOperation(BaseOperation):
         boundary_source = kwargs['boundary_source']
         boundary_path = kwargs.get('boundary_path')
         filter_field = kwargs['filter_field']
+        filter_mode = kwargs.get('filter_mode', 'inside')
         output_suffix = kwargs['output_suffix']
         output_format = kwargs['output_format']
         data_source_type = kwargs.get('data_source_type', 'aggregated')
@@ -193,21 +207,40 @@ class BoundaryFilterOperation(BaseOperation):
                 _logger.info(f"Found {len(files['snapp'])} Snapp files and {len(files['tapsi'])} Tapsi files")
                 status_placeholder.info(f"📂 **Step 1/4:** Found {total_files} files ({len(files['snapp'])} Snapp, {len(files['tapsi'])} Tapsi)")
                 
-                # Load and combine all files
+                # Load ALL columns (don't filter by column)
                 all_dfs = []
+                chunk_size = 100000  # Process 100k rows at a time
                 
-                # Process Snapp files
+                # Process Snapp files - load ALL columns
                 for idx, snapp_file in enumerate(files['snapp'], 1):
                     status_placeholder.info(f"📂 **Step 1/4:** Loading Snapp file {idx}/{len(files['snapp'])}: {snapp_file.name}")
                     _logger.info(f"Loading Snapp file: {snapp_file.name}")
-                    df_temp = pd.read_csv(snapp_file, header=None, names=DataColumnMetadata.get_snapp_columns())
+                    
+                    # Read ALL columns in chunks
+                    df_temp = pd.read_csv(
+                        snapp_file, 
+                        header=None, 
+                        names=DataColumnMetadata.get_snapp_columns(),
+                        chunksize=chunk_size
+                    )
+                    # Combine chunks
+                    df_temp = pd.concat(df_temp, ignore_index=True)
                     all_dfs.append(df_temp)
                 
-                # Process Tapsi files
+                # Process Tapsi files - load ALL columns
                 for idx, tapsi_file in enumerate(files['tapsi'], 1):
                     status_placeholder.info(f"📂 **Step 1/4:** Loading Tapsi file {idx}/{len(files['tapsi'])}: {tapsi_file.name}")
                     _logger.info(f"Loading Tapsi file: {tapsi_file.name}")
-                    df_temp = pd.read_csv(tapsi_file)
+                    
+                    # Read ALL columns in chunks
+                    df_temp = pd.read_csv(
+                        tapsi_file,
+                        chunksize=chunk_size
+                    )
+                    # Combine chunks
+                    df_temp = pd.concat(df_temp, ignore_index=True)
+                    
+                    # Apply column mapping for ALL columns
                     tapsi_mapping = DataColumnMetadata.get_tapsi_mapping()
                     df_temp.rename(columns=tapsi_mapping, inplace=True)
                     all_dfs.append(df_temp)
@@ -216,6 +249,11 @@ class BoundaryFilterOperation(BaseOperation):
                 status_placeholder.info(f"📂 **Step 1/4:** Combining {total_files} files...")
                 df = pd.concat(all_dfs, ignore_index=True)
                 _logger.info(f"Combined {total_files} files with {len(df)} total rows")
+                
+                # Clear memory
+                del all_dfs
+                import gc
+                gc.collect()
                 
             else:
                 status_placeholder.info("📂 **Step 1/4:** Loading aggregated file...")
@@ -230,30 +268,33 @@ class BoundaryFilterOperation(BaseOperation):
             # Load boundary
             status_placeholder.info(f"🗺️ **Step 2/4:** Loading boundary shapefile ({boundary_source})...")
             config = Config()
-            if boundary_source == "neighborhoods":
-                boundary_gdf = gpd.read_file(config.neighborhoods_shapefile)
-            elif boundary_source == "districts":
-                boundary_gdf = gpd.read_file(config.districts_shapefile)
-            else:
+            if boundary_source == "shapefile":
                 if not boundary_path or not Path(boundary_path).exists():
                     status_placeholder.empty()
                     return {"success": False, "error": "Boundary shapefile not found"}
                 boundary_gdf = gpd.read_file(boundary_path)
+            else:
+                # Use dynamic shapefile path discovery
+                shp_path = config.get_shapefile_path(boundary_source)
+                if not shp_path.exists():
+                    status_placeholder.empty()
+                    return {"success": False, "error": f"Shapefile not found: {shp_path}"}
+                boundary_gdf = gpd.read_file(shp_path)
             
             status_placeholder.success(f"✅ **Step 2/4:** Loaded boundary with {len(boundary_gdf)} zones")
             
-            # Determine coordinate columns
+            # Determine coordinate columns (try camelCase first, then snake_case)
             status_placeholder.info(f"🎯 **Step 3/4:** Preparing spatial filtering (field: {filter_field})...")
             
             if filter_field == "origin":
-                lat_col = next((c for c in ['org_lat', 'origin_lat'] if c in df.columns), None)
-                lon_col = next((c for c in ['org_lng', 'org_long', 'origin_lng', 'origin_long'] if c in df.columns), None)
+                lat_col = next((c for c in ['originLatitude', 'org_lat', 'origin_lat'] if c in df.columns), None)
+                lon_col = next((c for c in ['originLongitude', 'org_lng', 'org_long', 'origin_lng', 'origin_long'] if c in df.columns), None)
             elif filter_field == "destination":
-                lat_col = next((c for c in ['dst_lat', 'dest_lat', 'destination_lat'] if c in df.columns), None)
-                lon_col = next((c for c in ['dst_lng', 'dst_long', 'dest_lng', 'dest_long'] if c in df.columns), None)
+                lat_col = next((c for c in ['destinationLatitude', 'dst_lat', 'dest_lat', 'destination_lat'] if c in df.columns), None)
+                lon_col = next((c for c in ['destinationLongitude', 'dst_lng', 'dst_long', 'dest_lng', 'dest_long'] if c in df.columns), None)
             else:
-                possible_lat = ["org_lat", "dst_lat", "origin_lat", "dest_lat", "latitude", "lat"]
-                possible_lon = ["org_lng", "org_long", "dst_lng", "dst_long", "origin_lng", "dest_lng", "longitude", "lon", "lng"]
+                possible_lat = ["originLatitude", "destinationLatitude", "org_lat", "dst_lat", "origin_lat", "dest_lat", "latitude", "lat"]
+                possible_lon = ["originLongitude", "destinationLongitude", "org_lng", "org_long", "dst_lng", "dst_long", "origin_lng", "dest_lng", "longitude", "lon", "lng"]
                 lat_col = next((col for col in possible_lat if col in df.columns), None)
                 lon_col = next((col for col in possible_lon if col in df.columns), None)
             
@@ -261,26 +302,80 @@ class BoundaryFilterOperation(BaseOperation):
                 status_placeholder.empty()
                 return {"success": False, "error": f"Coordinate columns not found. Available: {list(df.columns)}"}
             
-            # Create points
+            # Create points using vectorized operations (much faster)
             status_placeholder.info(f"🎯 **Step 3/4:** Creating point geometries...")
-            df_clean = df[[lat_col, lon_col]].dropna()
-            if len(df_clean) == 0:
+            
+            # Check for valid coordinates
+            valid_mask = df[lat_col].notna() & df[lon_col].notna()
+            
+            if valid_mask.sum() == 0:
                 status_placeholder.empty()
                 return {"success": False, "error": "No valid coordinates"}
             
-            geometry = [Point(xy) for xy in zip(df_clean[lon_col], df_clean[lat_col])]
-            points_gdf = gpd.GeoDataFrame(df_clean, geometry=geometry, crs="EPSG:4326")
+            # Create GeoDataFrame with ALL columns, but use only valid coordinates for geometry
+            # Use vectorized point creation (faster than list comprehension)
+            geometry = gpd.points_from_xy(df.loc[valid_mask, lon_col], df.loc[valid_mask, lat_col])
+            points_gdf = gpd.GeoDataFrame(df[valid_mask], geometry=geometry, crs="EPSG:4326")
+            
+            # Store original dataframe indices for later filtering
+            original_indices = points_gdf.index
             
             if points_gdf.crs != boundary_gdf.crs:
                 status_placeholder.info(f"🎯 **Step 3/4:** Reprojecting coordinates to match boundary CRS...")
                 points_gdf = points_gdf.to_crs(boundary_gdf.crs)
             
-            # Spatial join
-            status_placeholder.info(f"🎯 **Step 3/4:** Performing spatial filtering (checking {len(points_gdf):,} points)...")
-            joined = gpd.sjoin(points_gdf, boundary_gdf, how='inner', predicate='within')
-            filtered_indices = df_clean.index[joined.index]
-            filtered_df = df.loc[filtered_indices].copy()
+            # Spatial join - process in batches if dataset is large
+            mode_text = "inside" if filter_mode == "inside" else "outside"
+            status_placeholder.info(f"🎯 **Step 3/4:** Performing spatial filtering ({mode_text} boundary, checking {len(points_gdf):,} points)...")
+            
+            if len(points_gdf) > 500000:
+                # Process in batches for large datasets
+                batch_size = 100000
+                filtered_indices = []
+                
+                for i in range(0, len(points_gdf), batch_size):
+                    batch = points_gdf.iloc[i:i+batch_size]
+                    joined_batch = gpd.sjoin(batch, boundary_gdf, how='inner', predicate='within')
+                    
+                    if filter_mode == "inside":
+                        # Keep points that ARE inside (matched)
+                        filtered_indices.extend(joined_batch.index.tolist())
+                    else:
+                        # Keep points that are NOT inside (not matched)
+                        outside_indices = batch.index.difference(joined_batch.index)
+                        filtered_indices.extend(outside_indices.tolist())
+                    
+                    # Update progress
+                    progress = min(100, int((i + batch_size) / len(points_gdf) * 100))
+                    status_placeholder.info(f"🎯 **Step 3/4:** Filtering... {progress}%")
+                    
+                    # Clear batch from memory
+                    del batch, joined_batch
+                    import gc
+                    gc.collect()
+                
+                # Get filtered dataframe using original indices - this keeps ALL columns
+                filtered_df = df.loc[filtered_indices].copy()
+            else:
+                # Process all at once for smaller datasets
+                joined = gpd.sjoin(points_gdf, boundary_gdf, how='inner', predicate='within')
+                
+                if filter_mode == "inside":
+                    # Keep points that ARE inside (matched)
+                    filtered_df = df.loc[joined.index].copy()
+                else:
+                    # Keep points that are NOT inside (not matched)
+                    outside_indices = points_gdf.index.difference(joined.index)
+                    filtered_df = df.loc[outside_indices].copy()
+                
+                del joined
+            
             filtered_count = len(filtered_df)
+            
+            # Clear memory
+            del points_gdf, df
+            import gc
+            gc.collect()
             
             filter_percentage = (filtered_count / total_count * 100) if total_count > 0 else 0
             status_placeholder.success(f"✅ **Step 3/4:** Filtered to {filtered_count:,} records ({filter_percentage:.1f}% of original)")
@@ -317,7 +412,8 @@ class BoundaryFilterOperation(BaseOperation):
                 # Save to GIS output directory
                 output_dir = config.gis_output_path / f"{input_path.stem}{output_suffix}"
                 output_dir.mkdir(exist_ok=True, parents=True)
-                filtered_geometry = [Point(xy) for xy in zip(filtered_df[lon_col], filtered_df[lat_col])]
+                # Use vectorized point creation
+                filtered_geometry = gpd.points_from_xy(filtered_df[lon_col], filtered_df[lat_col])
                 filtered_gdf = gpd.GeoDataFrame(filtered_df, geometry=filtered_geometry, crs="EPSG:4326")
                 output_path = output_dir / f"{input_path.stem}{output_suffix}.shp"
                 filtered_gdf.to_file(output_path)

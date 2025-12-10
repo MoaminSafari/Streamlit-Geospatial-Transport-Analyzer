@@ -705,14 +705,12 @@ class DataAnalysisEngine:
                         print(f"  🔗 Joining with shapefile: {params['shapefile_join_source']}")
                     
                     # Load join shapefile
-                    if params["shapefile_join_source"] == "neighborhoods":
-                        join_gdf = gpd.read_file(self.config.neighborhoods_shapefile)
-                    elif params["shapefile_join_source"] == "districts":
-                        join_gdf = gpd.read_file(self.config.districts_shapefile)
-                    elif params["shapefile_join_source"] == "subregions":
-                        join_gdf = gpd.read_file(self.config.subregions_shapefile)
-                    else:  # custom
+                    if params["shapefile_join_source"] == "custom":
                         join_gdf = gpd.read_file(params["shapefile_join_path"])
+                    else:
+                        # Use dynamic shapefile path discovery
+                        shp_path = self.config.get_shapefile_path(params["shapefile_join_source"])
+                        join_gdf = gpd.read_file(shp_path)
                     
                     # Select join fields
                     join_fields = params["shapefile_join_fields"]

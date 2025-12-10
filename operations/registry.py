@@ -82,16 +82,18 @@ def register_all_operations():
     registry.register(HourFilterOperation)
     registry.register(TimeSpaceFilterOperation)
     
-    # Transforms (4)
+    # Transforms (5)
     from operations.transforms.time_slice import TimeSliceOperation
     from operations.transforms.spatial_agg import SpatialAggOperation
     from operations.transforms.spatiotemporal_agg import SpatiotemporalAggOperation
     from operations.transforms.temporal_agg import TemporalAggOperation
+    from operations.transforms.time_binning import TimeBinningOperation
     
     registry.register(TimeSliceOperation)
     registry.register(SpatialAggOperation)
     registry.register(SpatiotemporalAggOperation)
     registry.register(TemporalAggOperation)
+    registry.register(TimeBinningOperation)
     
     # Joins (2)
     from operations.joins.shapefile_join import ShapefileJoinOperation

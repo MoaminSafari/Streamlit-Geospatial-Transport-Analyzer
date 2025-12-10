@@ -205,12 +205,26 @@ class Config:
 
     @property
     def traffic_zones_shapefile(self) -> Path:
-        """Traffic zones shapefile."""
+        """Traffic zones shapefile (Tehran traffic zones)."""
         possible_paths = [
+            self.gis_layers_path / "tehran_traffic_zones" / "traffic_zone.shp",
             self.gis_layers_path / "traffic_zone" / "traffic_zone.shp",
             self.gis_layers_path / "TrafficZones" / "traffic_zones.shp",
             self.gis_layers_path / "Traffic Zone" / "traffic_zone.shp",
-            self.gis_layers_path / "traffic_zone"
+            self.gis_layers_path / "tehran_traffic_zones"
+        ]
+        for path in possible_paths:
+            if path.exists():
+                return path
+        return possible_paths[0]
+    
+    @property
+    def traffic_control_zone_shapefile(self) -> Path:
+        """Traffic control zone shapefile (Tarhe Trafik area)."""
+        possible_paths = [
+            self.gis_layers_path / "traffic_control_zone" / "traffic_control_zone.shp",
+            self.gis_layers_path / "TrafficControlZone" / "traffic_control_zone.shp",
+            self.gis_layers_path / "traffic_control_zone"
         ]
         for path in possible_paths:
             if path.exists():
@@ -223,6 +237,31 @@ class Config:
         output_dir = self.gis_layers_path / "Output"
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
+    
+    def get_shapefile_path(self, layer_name: str) -> Path:
+        """
+        Get shapefile path for any layer by name.
+        Dynamically discovers the shapefile in the Layers directory.
+        
+        Args:
+            layer_name: Name of the layer directory (e.g., 'metro_area_stations')
+        
+        Returns:
+            Path to the .shp file
+        """
+        layer_dir = self.gis_layers_path / layer_name
+        
+        if not layer_dir.exists():
+            # Return expected path even if it doesn't exist yet
+            return layer_dir / f"{layer_name}.shp"
+        
+        # Find the .shp file in the directory
+        shp_files = list(layer_dir.glob("*.shp"))
+        if shp_files:
+            return shp_files[0]
+        
+        # Return expected path as fallback
+        return layer_dir / f"{layer_name}.shp"
     
     # ==========================================
     # Analysis Parameters

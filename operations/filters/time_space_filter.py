@@ -52,6 +52,62 @@ class TimeSpaceFilterOperation(BaseOperation):
         st.info("💡 **Example**: Filter all trips between 7-8 AM across an entire month")
         st.markdown("---")
         
+        # Data source selector
+        st.markdown("### Data Source")
+        data_source_type = st.radio(
+            "Select data source:",
+            options=["raw", "aggregated"],
+            format_func=lambda x: {
+                "raw": "📁 Raw Dataset (Uses global sidebar filters)",
+                "aggregated": "📊 Aggregated (Processed CSV files)"
+            }[x],
+            horizontal=True,
+            help="Choose between raw dataset or processed aggregated files",
+            key="tsf_data_source"
+        )
+        
+        use_global_filter = (data_source_type == "raw")
+        selected_aggregated_file = None
+        
+        if data_source_type == "aggregated":
+            # Show aggregated files
+            aggregated_files = utils.get_aggregated_files()
+            if not aggregated_files:
+                st.warning("⚠️ No aggregated files found. Please run an analysis first.")
+                return None
+            
+            file_options = {f.name: str(f) for f in aggregated_files}
+            selected_file_name = st.selectbox("Input file:", options=list(file_options.keys()))
+            selected_aggregated_file = file_options[selected_file_name]
+            
+        else:  # raw - show global filter info
+            # Get global filter settings from session state
+            data_source = st.session_state.get('data_source', 'both')
+            filter_type = st.session_state.get('filter_type', 'all')
+            filter_params = st.session_state.get('time_filter_params', {})
+            
+            # Format data source display
+            data_source_labels = {"both": "Snapp + Tapsi", "snapp": "Snapp", "tapsi": "Tapsi"}
+            data_source_display = data_source_labels.get(data_source, data_source)
+            
+            # Build info message
+            info_parts = [
+                "📌 **Using Global Sidebar Settings:**",
+                f"- Data Source: {data_source_display}",
+                f"- Time Filter: {filter_type.replace('_', ' ').title()}"
+            ]
+            
+            if 'year' in filter_params:
+                info_parts.append(f"- Year: {filter_params.get('year', 'N/A')}")
+            if 'month' in filter_params:
+                info_parts.append(f"- Month: {filter_params.get('month', 'N/A')}")
+            if 'season' in filter_params:
+                info_parts.append(f"- Season: {filter_params.get('season', 'N/A')}")
+            
+            st.info("\n".join(info_parts))
+        
+        st.markdown("---")
+        
         # Initialize session state
         for key in ['tsf_enable_org_time', 'tsf_enable_dst_time', 'tsf_enable_org_spatial', 'tsf_enable_dst_spatial']:
             if key not in st.session_state:
@@ -327,31 +383,45 @@ class TimeSpaceFilterOperation(BaseOperation):
                 'dst_spatial_params': dst_spatial_params,
                 'output_format': output_format,
                 'output_suffix': output_suffix,
-                'batch_processing': batch_processing
+                'batch_processing': batch_processing,
+                'data_source_type': data_source_type,
+                'use_global_filter': use_global_filter,
+                'selected_aggregated_file': selected_aggregated_file
             }
         
         return None
     
     def execute(self, org_time_params, dst_time_params, org_spatial_params, 
-                dst_spatial_params, output_format, output_suffix, batch_processing=False) -> Dict[str, Any]:
-        """Execute time-space filter on raw data files"""
+                dst_spatial_params, output_format, output_suffix, batch_processing=False,
+                data_source_type='raw', use_global_filter=True, selected_aggregated_file=None) -> Dict[str, Any]:
+        """Execute time-space filter on raw or aggregated data files"""
         
         import time
         start_time = time.time()
         
         try:
-            _logger.info("Starting time-space filter operation")
+            _logger.info(f"Starting time-space filter operation (source: {data_source_type})")
             
             # Get files to process
-            st.info("🔍 Finding matching files...")
-            time_filter = get_time_filter_from_sidebar()
-            files = get_filtered_files(st.session_state.data_source, time_filter)
+            if use_global_filter:
+                # Use raw files with global filter
+                st.info("🔍 Finding matching raw files...")
+                time_filter = get_time_filter_from_sidebar()
+                files = get_filtered_files(st.session_state.data_source, time_filter)
 
-            if not files:
-                return {'success': False, 'error': 'No files match the time filter'}
-            
-            st.success(f"✓ Found {len(files)} files to process")
-            _logger.info(f"Processing {len(files)} files")
+                if not files:
+                    return {'success': False, 'error': 'No files match the time filter'}
+                
+                st.success(f"✓ Found {len(files)} raw files to process")
+                _logger.info(f"Processing {len(files)} raw files")
+            else:
+                # Use single aggregated file
+                if not selected_aggregated_file:
+                    return {'success': False, 'error': 'No aggregated file selected'}
+                
+                st.info(f"📂 Loading aggregated file: {Path(selected_aggregated_file).name}")
+                files = [selected_aggregated_file]
+                _logger.info(f"Processing aggregated file: {selected_aggregated_file}")
             
             # Batch processing mode
             if batch_processing:
@@ -395,30 +465,38 @@ class TimeSpaceFilterOperation(BaseOperation):
                     file_name = Path(file_path).name
                     status_text.text(f"⏳ Reading file {idx + 1} of {len(files)}: {file_name}")
                     
-                    # Determine if Snapp or Tapsi
-                    if 'Snapp' in str(file_path) or 'snapp' in str(file_path).lower():
-                        # Snapp: no header, use memory-efficient dtypes
-                        from config import DataColumnMetadata
-                        df = pd.read_csv(
-                            file_path, 
-                            names=DataColumnMetadata.get_snapp_columns(),
-                            low_memory=True
-                        )
-                        # Rename to camelCase
-                        df = df.rename(columns=standard_columns)
+                    if use_global_filter:
+                        # Raw files - determine if Snapp or Tapsi
+                        if 'Snapp' in str(file_path) or 'snapp' in str(file_path).lower():
+                            # Snapp: no header, use memory-efficient dtypes
+                            from config import DataColumnMetadata
+                            df = pd.read_csv(
+                                file_path, 
+                                names=DataColumnMetadata.get_snapp_columns(),
+                                low_memory=True
+                            )
+                            # Rename to camelCase
+                            df = df.rename(columns=standard_columns)
+                        else:
+                            # Tapsi: has header (already in camelCase format)
+                            df = pd.read_csv(file_path, low_memory=True)
+                        
+                        # Standardize column names to camelCase if needed
+                        if 'org_lat' in df.columns:
+                            df = df.rename(columns=standard_columns)
+                        
+                        # Only keep necessary columns to save memory
+                        required_cols = ['originLatitude', 'originLongitude', 'destinationLatitude', 
+                                       'destinationLongitude', 'startTime', 'endTime', 'distance']
+                        available_cols = [col for col in required_cols if col in df.columns]
+                        df = df[available_cols]
                     else:
-                        # Tapsi: has header (already in camelCase format)
+                        # Aggregated file - load as is
                         df = pd.read_csv(file_path, low_memory=True)
-                    
-                    # Standardize column names to camelCase if needed
-                    if 'org_lat' in df.columns:
-                        df = df.rename(columns=standard_columns)
-                    
-                    # Only keep necessary columns to save memory
-                    required_cols = ['originLatitude', 'originLongitude', 'destinationLatitude', 
-                                   'destinationLongitude', 'startTime', 'endTime', 'distance']
-                    available_cols = [col for col in required_cols if col in df.columns]
-                    df = df[available_cols]
+                        
+                        # Standardize column names if needed
+                        if 'org_lat' in df.columns:
+                            df = df.rename(columns=standard_columns)
                     
                     all_data.append(df)
                     total_rows_loaded += len(df)
@@ -837,16 +915,10 @@ class TimeSpaceFilterOperation(BaseOperation):
             config = Config()
             boundary_source = params['boundary_source']
             
-            if boundary_source == 'neighborhoods':
-                shp_path = config.neighborhoods_shapefile
-            elif boundary_source == 'districts':
-                shp_path = config.districts_shapefile
-            elif boundary_source == 'subregions':
-                shp_path = config.subregions_shapefile
-            elif boundary_source == 'traffic_zones':
-                shp_path = config.traffic_zones_shapefile
-            else:
-                raise ValueError(f"Unknown boundary source: {boundary_source}")
+            # Use dynamic shapefile path discovery
+            shp_path = config.get_shapefile_path(boundary_source)
+            if not shp_path.exists():
+                raise ValueError(f"Shapefile not found: {shp_path}")
             
             boundaries = gpd.read_file(shp_path)
             zone_field = params['zone_field']

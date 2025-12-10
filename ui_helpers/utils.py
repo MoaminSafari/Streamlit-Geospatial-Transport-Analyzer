@@ -106,69 +106,80 @@ def get_raw_files() -> Dict[str, List[Path]]:
         return {"snapp": [], "tapsi": []}
 
 
+def get_boundary_shapefile_path(boundary_source: str, config_obj=None):
+    """
+    Get shapefile path for any boundary source dynamically.
+    
+    Args:
+        boundary_source: The boundary source key (e.g., 'neighborhoods', 'metro_area_stations')
+        config_obj: Optional Config instance (will create if not provided)
+    
+    Returns:
+        Path to shapefile
+    """
+    if config_obj is None:
+        config_obj = Config()
+    
+    return config_obj.get_shapefile_path(boundary_source)
+
+
 def get_shapefile_zones(boundary_source: str) -> Dict[str, List]:
     """
     Get unique zone values from a shapefile for multi-select filtering.
+    Dynamically discovers shapefile and its fields.
     
     Args:
-        boundary_source: One of 'neighborhoods', 'districts', 'traffic_zones'
+        boundary_source: Shapefile key (e.g., 'neighborhoods', 'districts', etc.)
         
     Returns:
         Dictionary with 'field' (field name) and 'values' (sorted unique values)
     """
     try:
         import geopandas as gpd
+        from operations.config import get_shapefile_fields, get_default_field
         config = Config()
         
-        # Determine shapefile path and field name
-        if boundary_source == "neighborhoods":
-            shp_path = config.neighborhoods_shapefile
-            field_name = "NAME_MAHAL"  # Use Persian name for neighborhoods
-            fallback_field = "CODE"
-        elif boundary_source == "districts":
-            shp_path = config.districts_shapefile
-            field_name = "STRING_"
-            fallback_field = "REGION"
-        elif boundary_source == "subregions":
-            shp_path = config.subregions_shapefile
-            field_name = "TEXT"
-            fallback_field = "NAHIYEH"
-        elif boundary_source == "traffic_zones":
-            shp_path = config.gis_layers_path / "traffic_zone"
-            shp_files = list(shp_path.rglob("*.shp")) if shp_path.exists() else []
-            if not shp_files:
-                return {"field": None, "values": [], "error": "Traffic zones shapefile not found"}
-            shp_path = shp_files[0]
-            field_name = "ZoneNumber"
-            fallback_field = "OBJECTID"
-        else:
-            return {"field": None, "values": [], "error": f"Unknown boundary source: {boundary_source}"}
+        # Get shapefile path dynamically
+        layers_path = config.gis_layers_path
+        shp_dir = layers_path / boundary_source
+        
+        if not shp_dir.exists():
+            return {"field": None, "values": [], "error": f"Shapefile directory not found: {shp_dir}"}
+        
+        # Find .shp file in directory
+        shp_files = list(shp_dir.glob("*.shp"))
+        if not shp_files:
+            return {"field": None, "values": [], "error": f"No shapefile found in: {shp_dir}"}
+        
+        shp_path = shp_files[0]
         
         # Load shapefile
-        if not shp_path.exists():
-            return {"field": None, "values": [], "error": f"Shapefile not found: {shp_path}"}
-        
         gdf = gpd.read_file(shp_path)
         
-        # Get field (use fallback if primary doesn't exist)
+        # Get the default field for this shapefile
+        field_name = get_default_field(boundary_source)
+        
+        # Verify field exists, otherwise try to find a suitable one
         if field_name not in gdf.columns:
-            if fallback_field in gdf.columns:
-                field_name = fallback_field
+            available_fields = get_shapefile_fields(boundary_source)
+            # Prefer NAME-like fields for display
+            name_fields = [f for f in available_fields if 'NAME' in f.upper()]
+            if name_fields:
+                field_name = name_fields[0]
+            elif available_fields:
+                field_name = available_fields[0]
             else:
-                return {"field": None, "values": [], "error": f"Field {field_name} not found in shapefile"}
+                return {"field": None, "values": [], "error": f"No valid fields found in shapefile"}
         
         # Extract unique values and sort
         unique_values = gdf[field_name].dropna().unique()
         
         # Convert to appropriate type and sort
-        if boundary_source == "traffic_zones" or boundary_source == "districts":
-            # Numeric zones - convert to int and sort numerically
-            try:
-                unique_values = sorted([int(v) for v in unique_values])
-            except (ValueError, TypeError):
-                unique_values = sorted(unique_values.tolist())
-        else:
-            # String values (neighborhood names) - sort alphabetically
+        # Try numeric first
+        try:
+            unique_values = sorted([int(v) for v in unique_values])
+        except (ValueError, TypeError):
+            # Fall back to string sorting
             unique_values = sorted(str(v) for v in unique_values)
         
         return {
